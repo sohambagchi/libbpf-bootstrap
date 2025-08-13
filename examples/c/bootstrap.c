@@ -8,6 +8,7 @@
 #include <pthread.h>
 #include <unistd.h>
 #include <stdatomic.h>
+#include <stddef.h>
 #include <bpf/libbpf.h>
 #include "bootstrap.h"
 #include "bootstrap.skel.h"
@@ -103,6 +104,12 @@ static void *printer_thread_func(void *arg)
 	unsigned long *consumer_pos = (unsigned long *)arg;
 	unsigned long last_consumer_pos = 0;
 	unsigned long current_consumer_pos;
+	
+	/* Address tracking for loop detection */
+	const void *last_event_addr = NULL;
+	const void *first_event_addr = NULL;
+	bool seen_first_addr = false;
+	unsigned long event_count = 0;
 
 	if (!consumer_pos) {
 		fprintf(stderr, "Invalid consumer_pos pointer\n");
@@ -118,6 +125,28 @@ static void *printer_thread_func(void *arg)
 			/* Load the shared event and print */
 			e = (const struct event *)shared_event_ptr;
 			if (e) {
+				event_count++;
+				
+				/* Check for address loop around */
+				if (!seen_first_addr) {
+					first_event_addr = e;
+					seen_first_addr = true;
+					printf("[Ring buffer started - first event at %p]\n", (void*)e);
+				} else if (e == first_event_addr && event_count > 1) {
+					printf("[Ring buffer wrapped around! Back to first address %p after %lu events]\n", 
+					       (void*)e, event_count - 1);
+					event_count = 1; /* Reset counter */
+				} else if (last_event_addr && (void*)e < last_event_addr) {
+					/* Detect if address decreased significantly (likely wrap around) */
+					ptrdiff_t addr_diff = (char*)last_event_addr - (char*)e;
+					if (addr_diff > 4096) { /* Threshold for likely wrap around */
+						printf("[Possible ring buffer wrap detected: %p -> %p (diff: %td bytes)]\n", 
+						       last_event_addr, (void*)e, addr_diff);
+					}
+				}
+				
+				last_event_addr = e;
+
 				/* Process and print the event */
 				time(&t);
 				tm = localtime(&t);
