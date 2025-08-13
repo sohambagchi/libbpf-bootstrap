@@ -7,6 +7,7 @@
 #include <sys/resource.h>
 #include <pthread.h>
 #include <unistd.h>
+#include <stdatomic.h>
 #include <bpf/libbpf.h>
 #include "bootstrap.h"
 #include "bootstrap.skel.h"
@@ -110,7 +111,7 @@ static void *printer_thread_func(void *arg)
 
 	while (!exiting) {
 		/* Check if consumer_pos has changed */
-		current_consumer_pos = *consumer_pos;
+		current_consumer_pos = atomic_load_explicit((_Atomic unsigned long *)consumer_pos, memory_order_acquire);
 		if (current_consumer_pos != last_consumer_pos) {
 			last_consumer_pos = current_consumer_pos;
 			
