@@ -108,14 +108,14 @@ static void *printer_thread_func(void *arg)
 			strftime(ts, sizeof(ts), "%H:%M:%S", tm);
 
 			if (e->exit_event) {
-				printf("%-8s %-5s %-16s %-7d %-7d [%u]", ts, "EXIT", e->comm, e->pid, e->ppid,
-				       e->exit_code);
+				printf("%-8s %-5s %-16s %-7d %-7d [%u] @%p", ts, "EXIT", e->comm, e->pid, e->ppid,
+				       e->exit_code, (void*)e);
 				if (e->duration_ns)
 					printf(" (%llums)", e->duration_ns / 1000000);
 				printf("\n");
 			} else {
-				printf("%-8s %-5s %-16s %-7d %-7d %s\n", ts, "EXEC", e->comm, e->pid, e->ppid,
-				       e->filename);
+				printf("%-8s %-5s %-16s %-7d %-7d %s @%p\n", ts, "EXEC", e->comm, e->pid, e->ppid,
+				       e->filename, (void*)e);
 			}
 		} else {
 			pthread_mutex_unlock(&shared_mutex);
@@ -197,8 +197,8 @@ int main(int argc, char **argv)
 	}
 
 	/* Process events */
-	printf("%-8s %-5s %-16s %-7s %-7s %s\n", "TIME", "EVENT", "COMM", "PID", "PPID",
-	       "FILENAME/EXIT CODE");
+	printf("%-8s %-5s %-16s %-7s %-7s %-18s %s\n", "TIME", "EVENT", "COMM", "PID", "PPID",
+	       "FILENAME/EXIT CODE", "EVENT_ADDR");
 	while (!exiting) {
 		err = ring_buffer__poll(rb, 100 /* timeout, ms */);
 		/* Ctrl-C will cause -EINTR */
