@@ -5,6 +5,8 @@
 #include <stdio.h>
 #include <time.h>
 #include <sys/resource.h>
+#include <pthread.h>
+#include <unistd.h>
 #include <bpf/libbpf.h>
 #include "bootstrap.h"
 #include "bootstrap.skel.h"
@@ -13,6 +15,18 @@ static struct env {
 	bool verbose;
 	long min_duration_ms;
 } env;
+
+/* Threading support */
+enum flag_state {
+	FLAG_UNSET = 0,
+	FLAG_SET = 1
+};
+
+/* Shared variables between threads */
+static volatile const struct event *shared_event_ptr = NULL;
+static volatile enum flag_state shared_flag = FLAG_UNSET;
+static pthread_mutex_t shared_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_t printer_thread;
 
 const char *argp_program_version = "bootstrap 0.0";
 const char *argp_program_bug_address = "<bpf@vger.kernel.org>";
@@ -72,27 +86,55 @@ static void sig_handler(int sig)
 	exiting = true;
 }
 
-static int handle_event(void *ctx, void *data, size_t data_sz)
+static void *printer_thread_func(void *arg)
 {
-	const struct event *e = data;
+	const struct event *e;
 	struct tm *tm;
 	char ts[32];
 	time_t t;
 
-	time(&t);
-	tm = localtime(&t);
-	strftime(ts, sizeof(ts), "%H:%M:%S", tm);
+	while (!exiting) {
+		/* Poll for new events */
+		pthread_mutex_lock(&shared_mutex);
+		if (shared_flag == FLAG_SET) {
+			/* Copy event data while holding the lock */
+			e = (const struct event *)shared_event_ptr;
+			shared_flag = FLAG_UNSET;
+			pthread_mutex_unlock(&shared_mutex);
 
-	if (e->exit_event) {
-		printf("%-8s %-5s %-16s %-7d %-7d [%u]", ts, "EXIT", e->comm, e->pid, e->ppid,
-		       e->exit_code);
-		if (e->duration_ns)
-			printf(" (%llums)", e->duration_ns / 1000000);
-		printf("\n");
-	} else {
-		printf("%-8s %-5s %-16s %-7d %-7d %s\n", ts, "EXEC", e->comm, e->pid, e->ppid,
-		       e->filename);
+			/* Process and print the event */
+			time(&t);
+			tm = localtime(&t);
+			strftime(ts, sizeof(ts), "%H:%M:%S", tm);
+
+			if (e->exit_event) {
+				printf("%-8s %-5s %-16s %-7d %-7d [%u]", ts, "EXIT", e->comm, e->pid, e->ppid,
+				       e->exit_code);
+				if (e->duration_ns)
+					printf(" (%llums)", e->duration_ns / 1000000);
+				printf("\n");
+			} else {
+				printf("%-8s %-5s %-16s %-7d %-7d %s\n", ts, "EXEC", e->comm, e->pid, e->ppid,
+				       e->filename);
+			}
+		} else {
+			pthread_mutex_unlock(&shared_mutex);
+			/* Small delay to avoid busy waiting */
+			usleep(1000); /* 1ms */
+		}
 	}
+	return NULL;
+}
+
+static int handle_event(void *ctx, void *data, size_t data_sz)
+{
+	const struct event *e = data;
+
+	/* Update shared variables for printer thread */
+	pthread_mutex_lock(&shared_mutex);
+	shared_event_ptr = e;
+	shared_flag = FLAG_SET;
+	pthread_mutex_unlock(&shared_mutex);
 
 	return 0;
 }
@@ -147,6 +189,13 @@ int main(int argc, char **argv)
 		goto cleanup;
 	}
 
+	/* Start printer thread */
+	err = pthread_create(&printer_thread, NULL, printer_thread_func, NULL);
+	if (err) {
+		fprintf(stderr, "Failed to create printer thread: %d\n", err);
+		goto cleanup;
+	}
+
 	/* Process events */
 	printf("%-8s %-5s %-16s %-7s %-7s %s\n", "TIME", "EVENT", "COMM", "PID", "PPID",
 	       "FILENAME/EXIT CODE");
@@ -162,6 +211,9 @@ int main(int argc, char **argv)
 			break;
 		}
 	}
+
+	/* Wait for printer thread to finish */
+	pthread_join(printer_thread, NULL);
 
 cleanup:
 	/* Clean up */
