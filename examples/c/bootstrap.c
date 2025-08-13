@@ -16,15 +16,23 @@ static struct env {
 	long min_duration_ms;
 } env;
 
-/* Threading support */
-enum flag_state {
-	FLAG_UNSET = 0,
-	FLAG_SET = 1
+/* Minimal structures to access ring buffer internals */
+struct ring {
+	void *sample_cb;
+	void *ctx;
+	void *data;
+	unsigned long *consumer_pos;
+	/* ... other fields we don't need */
+};
+
+struct ring_buffer_internal {
+	void *events;
+	struct ring **rings;
+	/* ... other fields we don't need */
 };
 
 /* Shared variables between threads */
 static volatile const struct event *shared_event_ptr = NULL;
-static volatile enum flag_state shared_flag = FLAG_UNSET;
 static pthread_t printer_thread;
 
 const char *argp_program_version = "bootstrap 0.0";
@@ -91,28 +99,39 @@ static void *printer_thread_func(void *arg)
 	struct tm *tm;
 	char ts[32];
 	time_t t;
+	unsigned long *consumer_pos = (unsigned long *)arg;
+	unsigned long last_consumer_pos = 0;
+	unsigned long current_consumer_pos;
+
+	if (!consumer_pos) {
+		fprintf(stderr, "Invalid consumer_pos pointer\n");
+		return NULL;
+	}
 
 	while (!exiting) {
-		/* Poll for new events */
-		if (shared_flag == FLAG_SET) {
-			/* Copy event data */
+		/* Check if consumer_pos has changed */
+		current_consumer_pos = *consumer_pos;
+		if (current_consumer_pos != last_consumer_pos) {
+			last_consumer_pos = current_consumer_pos;
+			
+			/* Load the shared event and print */
 			e = (const struct event *)shared_event_ptr;
-			shared_flag = FLAG_UNSET;
+			if (e) {
+				/* Process and print the event */
+				time(&t);
+				tm = localtime(&t);
+				strftime(ts, sizeof(ts), "%H:%M:%S", tm);
 
-			/* Process and print the event */
-			time(&t);
-			tm = localtime(&t);
-			strftime(ts, sizeof(ts), "%H:%M:%S", tm);
-
-			if (e->exit_event) {
-				printf("%-8s %-5s %-16s %-7d %-7d [%u] @%p", ts, "EXIT", e->comm, e->pid, e->ppid,
-				       e->exit_code, (void*)e);
-				if (e->duration_ns)
-					printf(" (%llums)", e->duration_ns / 1000000);
-				printf("\n");
-			} else {
-				printf("%-8s %-5s %-16s %-7d %-7d %s @%p\n", ts, "EXEC", e->comm, e->pid, e->ppid,
-				       e->filename, (void*)e);
+				if (e->exit_event) {
+					printf("%-8s %-5s %-16s %-7d %-7d [%u] @%p", ts, "EXIT", e->comm, e->pid, e->ppid,
+					       e->exit_code, (void*)e);
+					if (e->duration_ns)
+						printf(" (%llums)", e->duration_ns / 1000000);
+					printf("\n");
+				} else {
+					printf("%-8s %-5s %-16s %-7d %-7d %s @%p\n", ts, "EXEC", e->comm, e->pid, e->ppid,
+					       e->filename, (void*)e);
+				}
 			}
 		} else {
 			/* Small delay to avoid busy waiting */
@@ -126,9 +145,8 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
 {
 	const struct event *e = data;
 
-	/* Update shared variables for printer thread */
+	/* Update shared event pointer for printer thread */
 	shared_event_ptr = e;
-	shared_flag = FLAG_SET;
 
 	return 0;
 }
@@ -183,8 +201,12 @@ int main(int argc, char **argv)
 		goto cleanup;
 	}
 
-	/* Start printer thread */
-	err = pthread_create(&printer_thread, NULL, printer_thread_func, NULL);
+	/* Extract consumer_pos from the first ring to pass to printer thread */
+	struct ring_buffer_internal *rb_internal = (struct ring_buffer_internal *)rb;
+	unsigned long *consumer_pos = rb_internal->rings[0]->consumer_pos;
+
+	/* Start printer thread with consumer_pos */
+	err = pthread_create(&printer_thread, NULL, printer_thread_func, consumer_pos);
 	if (err) {
 		fprintf(stderr, "Failed to create printer thread: %d\n", err);
 		goto cleanup;
