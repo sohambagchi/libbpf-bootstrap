@@ -25,7 +25,6 @@ enum flag_state {
 /* Shared variables between threads */
 static volatile const struct event *shared_event_ptr = NULL;
 static volatile enum flag_state shared_flag = FLAG_UNSET;
-static pthread_mutex_t shared_mutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_t printer_thread;
 
 const char *argp_program_version = "bootstrap 0.0";
@@ -95,12 +94,10 @@ static void *printer_thread_func(void *arg)
 
 	while (!exiting) {
 		/* Poll for new events */
-		pthread_mutex_lock(&shared_mutex);
 		if (shared_flag == FLAG_SET) {
-			/* Copy event data while holding the lock */
+			/* Copy event data */
 			e = (const struct event *)shared_event_ptr;
 			shared_flag = FLAG_UNSET;
-			pthread_mutex_unlock(&shared_mutex);
 
 			/* Process and print the event */
 			time(&t);
@@ -118,7 +115,6 @@ static void *printer_thread_func(void *arg)
 				       e->filename, (void*)e);
 			}
 		} else {
-			pthread_mutex_unlock(&shared_mutex);
 			/* Small delay to avoid busy waiting */
 			usleep(1000); /* 1ms */
 		}
@@ -131,10 +127,8 @@ static int handle_event(void *ctx, void *data, size_t data_sz)
 	const struct event *e = data;
 
 	/* Update shared variables for printer thread */
-	pthread_mutex_lock(&shared_mutex);
 	shared_event_ptr = e;
 	shared_flag = FLAG_SET;
-	pthread_mutex_unlock(&shared_mutex);
 
 	return 0;
 }
