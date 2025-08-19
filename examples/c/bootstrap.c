@@ -153,14 +153,14 @@ static void *printer_thread_func(void *arg)
 				strftime(ts, sizeof(ts), "%H:%M:%S", tm);
 
 				if (e->exit_event) {
-					printf("%-8s %-5s %-16s %-7d %-7d [%u] @%p", ts, "EXIT", e->comm, e->pid, e->ppid,
-					       e->exit_code, (void*)e);
+					printf("%-8s %-5s %-16s %-7d %-7d [%u] @%p consumer_pos=%lu", ts, "EXIT", e->comm, e->pid, e->ppid,
+						   e->exit_code, (void*)e, current_consumer_pos);
 					if (e->duration_ns)
 						printf(" (%llums)", e->duration_ns / 1000000);
 					printf("\n");
 				} else {
-					printf("%-8s %-5s %-16s %-7d %-7d %s @%p\n", ts, "EXEC", e->comm, e->pid, e->ppid,
-					       e->filename, (void*)e);
+					printf("%-8s %-5s %-16s %-7d %-7d %s @%p consumer_pos=%lu\n", ts, "EXEC", e->comm, e->pid, e->ppid,
+						   e->filename, (void*)e, current_consumer_pos);
 				}
 			}
 		} else {
